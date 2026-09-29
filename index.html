@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Albany 区域末端配送路线模拟器" />
+  <title>Albany Route Planner</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17212b;
+      --muted: #65717d;
+      --line: #dfe5ea;
+      --panel: #ffffff;
+      --bg: #f4f7f9;
+      --brand: #176b5b;
+      --brand-dark: #0f5548;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+    button, input, textarea { font: inherit; }
+    .app { min-height: 100%; display: grid; grid-template-rows: auto 1fr; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 15px 20px; background: #102a2a; color: white; }
+    header h1 { margin: 0; font-size: 18px; letter-spacing: .1px; }
+    header p { margin: 2px 0 0; color: #b9cfca; font-size: 12px; }
+    .scope { padding: 6px 10px; border: 1px solid #44615c; border-radius: 999px; color: #d9e8e4; font-size: 12px; white-space: nowrap; }
+    main { min-height: 0; display: grid; grid-template-columns: 340px minmax(420px, 1fr) 280px; }
+    aside { min-height: 0; overflow: auto; padding: 16px; background: var(--panel); border-right: 1px solid var(--line); }
+    .results { border-right: 0; border-left: 1px solid var(--line); }
+    #map { min-height: 560px; height: 100%; background: #e7ecef; }
+    label { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 700; }
+    input, textarea { width: 100%; border: 1px solid #cbd4dc; border-radius: 8px; background: white; padding: 9px 10px; color: var(--ink); outline: none; }
+    input:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(23,107,91,.12); }
+    textarea { min-height: 210px; resize: vertical; line-height: 1.45; }
+    .row { display: grid; grid-template-columns: 1fr 90px; gap: 10px; margin: 12px 0; }
+    .field { margin-bottom: 12px; }
+    .hint { color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 6px; }
+    .actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 12px; }
+    button { border: 0; border-radius: 8px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .primary { color: white; background: var(--brand); }
+    .primary:hover:not(:disabled) { background: var(--brand-dark); }
+    .secondary { color: #31404d; background: #edf1f4; }
+    .status { min-height: 38px; margin-top: 12px; padding: 9px 10px; border-radius: 8px; background: #f0f5f3; color: #31564d; font-size: 12px; line-height: 1.5; }
+    .status.error { background: #fff1f0; color: var(--danger); }
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .metric { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfd; }
+    .metric strong { display: block; font-size: 18px; }
+    .metric span { color: var(--muted); font-size: 11px; }
+    .route-card { margin-bottom: 9px; padding: 11px; border: 1px solid var(--line); border-left: 5px solid var(--route-color); border-radius: 9px; background: white; }
+    .route-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .route-title strong { font-size: 13px; }
+    .route-title span { color: var(--muted); font-size: 11px; }
+    .route-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; color: #40505d; font-size: 11px; }
+    .empty { padding: 26px 8px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .footer-note { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .stop-icon { width: 24px !important; height: 24px !important; margin: -12px 0 0 -12px !important; border: 2px solid #fff; border-radius: 50%; color: white; text-align: center; font-weight: 800; font-size: 10px; line-height: 20px; box-shadow: 0 1px 5px rgba(0,0,0,.35); }
+    .depot-icon { width: 30px !important; height: 30px !important; margin: -15px 0 0 -15px !important; border: 3px solid white; border-radius: 8px; background: #102a2a; color: white; text-align: center; font-size: 16px; line-height: 24px; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 310px 1fr; grid-template-rows: minmax(520px, 1fr) auto; }
+      .results { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+      #routeList { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+    }
+    @media (max-width: 700px) {
+      header { align-items: flex-start; }
+      .scope { display: none; }
+      main { display: block; }
+      aside { overflow: visible; }
+      #map { height: 56vh; min-height: 420px; }
+      .results { border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div><h1>Albany Route Planner</h1><p>小规模末端配送分区与路线模拟</p></div>
+      <div class="scope">Albany · Troy · Schenectady · Clifton Park</div>
+    </header>
+    <main>
+      <aside>
+        <div class="field">
+          <label for="depot">出发站地址</label>
+          <input id="depot" value="Albany, NY" autocomplete="street-address" />
+        </div>
+        <div class="field">
+          <label for="addresses">配送地址（每行一个）</label>
+          <textarea id="addresses" spellcheck="false">1 Crossgates Mall Rd, Albany, NY 12203
+1400 Washington Ave, Albany, NY 12222
+25 Eagle St, Albany, NY 12207
+100 State St, Albany, NY 12207
+433 River St, Troy, NY 12180
+65 4th St, Troy, NY 12180
+200 Broadway, Troy, NY 12180
+1 Research Cir, Niskayuna, NY 12309
+93 W Campbell Rd, Schenectady, NY 12306
+105 Jay St, Schenectady, NY 12305
+22 Clifton Country Rd, Clifton Park, NY 12065
+1208 NY-146, Clifton Park, NY 12065</textarea>
+          <div class="hint">演示版最多 60 个地址；地址越完整，定位越准确。</div>
+        </div>
+        <div class="row">
+          <div><label for="routes">线路数量</label><input id="routes" type="number" min="1" max="12" value="4" /></div>
+          <div><label for="service">每站分钟</label><input id="service" type="number" min="1" max="30" value="4" /></div>
+        </div>
+        <div class="actions">
+          <button id="planBtn" class="primary">生成路线</button>
+          <button id="sampleBtn" class="secondary" title="恢复示例地址">示例</button>
+        </div>
+        <div id="status" class="status">准备就绪。输入地址后生成模拟路线。</div>
+        <div class="footer-note">地址会从浏览器发送至公共 Nominatim 地理编码服务，坐标会发送至公共 OSRM 路线服务；本网页不保存订单。真实运营数据建议后续切换为本地 Valhalla。</div>
+      </aside>
+
+      <div id="map" aria-label="路线地图"></div>
+
+      <aside class="results">
+        <div class="metric-grid">
+          <div class="metric"><strong id="totalStops">0</strong><span>Stops</span></div>
+          <div class="metric"><strong id="totalRoutes">0</strong><span>Routes</span></div>
+          <div class="metric"><strong id="totalMiles">—</strong><span>Miles</span></div>
+          <div class="metric"><strong id="maxTime">—</strong><span>Longest route</span></div>
+        </div>
+        <button id="exportBtn" class="secondary" style="width:100%" disabled>导出 CSV</button>
+        <div id="routeList"><div class="empty">生成路线后，这里会显示每条线路的 Stops、里程和预计时间。</div></div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const COLORS = ['#1565c0','#d84315','#2e7d32','#7b1fa2','#00838f','#c2185b','#6d4c41','#ef6c00','#455a64','#558b2f','#5e35b1','#0277bd'];
+    const ALBANY_BOUNDS = '-74.35,42.55,-73.45,43.20';
+    const SAMPLE = document.getElementById('addresses').value;
+    const map = L.map('map', { zoomControl: true }).setView([42.76, -73.82], 9);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+    const layer = L.layerGroup().addTo(map);
+    let latestRows = [];
+
+    const $ = id => document.getElementById(id);
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const radians = deg => deg * Math.PI / 180;
+    const miles = meters => meters / 1609.344;
+    const minutes = seconds => seconds / 60;
+
+    function distance(a, b) {
+      const R = 3958.8;
+      const dLat = radians(b.lat - a.lat);
+      const dLon = radians(b.lon - a.lon);
+      const q = Math.sin(dLat/2) ** 2 + Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dLon/2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(q));
+    }
+
+    function setStatus(message, error = false) {
+      $('status').textContent = message;
+      $('status').classList.toggle('error', error);
+    }
+
+    async function geocode(address) {
+      const key = `geo:${address.toLowerCase()}`;
+      const cached = localStorage.getItem(key);
+      if (cached) return JSON.parse(cached);
+      const query = new URLSearchParams({
+        q: address,
+        format: 'jsonv2',
+        limit: '1',
+        countrycodes: 'us',
+        viewbox: ALBANY_BOUNDS,
+        bounded: '1'
+      });
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?${query}`);
+      if (!response.ok) throw new Error(`地理编码服务错误 (${response.status})`);
+      const data = await response.json();
+      if (!data.length) return null;
+      const result = { address, lat: Number(data[0].lat), lon: Number(data[0].lon), label: data[0].display_name };
+      localStorage.setItem(key, JSON.stringify(result));
+      return result;
+    }
+
+    function partition(stops, depot, k) {
+      const sorted = [...stops].sort((a,b) => {
+        const aa = Math.atan2(a.lat - depot.lat, a.lon - depot.lon);
+        const ab = Math.atan2(b.lat - depot.lat, b.lon - depot.lon);
+        return aa - ab;
+      });
+      const groups = Array.from({ length: k }, () => []);
+      sorted.forEach((stop, i) => groups[Math.min(k - 1, Math.floor(i * k / sorted.length))].push(stop));
+      return groups.filter(group => group.length);
+    }
+
+    function nearestNeighbor(stops, depot) {
+      const remaining = [...stops];
+      const ordered = [];
+      let current = depot;
+      while (remaining.length) {
+        let best = 0;
+        for (let i = 1; i < remaining.length; i++) {
+          if (distance(current, remaining[i]) < distance(current, remaining[best])) best = i;
+        }
+        current = remaining.splice(best, 1)[0];
+        ordered.push(current);
+      }
+      return ordered;
+    }
+
+    async function roadRoute(depot, ordered) {
+      const points = [depot, ...ordered, depot];
+      const coords = points.map(p => `${p.lon},${p.lat}`).join(';');
+      const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('道路服务暂时不可用');
+      const data = await response.json();
+      if (data.code !== 'Ok' || !data.routes?.length) throw new Error('无法生成道路路线');
+      return data.routes[0];
+    }
+
+    function markerIcon(text, color) {
+      return L.divIcon({ className: '', html: `<div class="stop-icon" style="background:${color}">${text}</div>` });
+    }
+
+    function render(routes, depot, serviceMinutes) {
+      layer.clearLayers();
+      L.marker([depot.lat, depot.lon], { icon: L.divIcon({ className:'', html:'<div class="depot-icon">◆</div>' }) })
+        .bindPopup(`<strong>Depot</strong><br>${depot.label || depot.address}`).addTo(layer);
+      const bounds = [[depot.lat, depot.lon]];
+      let totalDistance = 0;
+      let longest = 0;
+      latestRows = [];
+      $('routeList').innerHTML = '';
+
+      routes.forEach((route, index) => {
+        const color = COLORS[index % COLORS.length];
+        const roadMinutes = route.duration ? minutes(route.duration) : 0;
+        const totalMinutes = roadMinutes + route.stops.length * serviceMinutes;
+        const routeMiles = route.distance ? miles(route.distance) : route.fallbackMiles;
+        totalDistance += routeMiles;
+        longest = Math.max(longest, totalMinutes);
+
+        if (route.geometry) {
+          L.geoJSON(route.geometry, { style: { color, weight: 5, opacity: .78 } }).addTo(layer);
+        } else {
+          const points = [depot, ...route.stops, depot].map(p => [p.lat, p.lon]);
+          L.polyline(points, { color, weight: 4, opacity: .65, dashArray: '7 7' }).addTo(layer);
+        }
+
+        route.stops.forEach((stop, stopIndex) => {
+          bounds.push([stop.lat, stop.lon]);
+          L.marker([stop.lat, stop.lon], { icon: markerIcon(stopIndex + 1, color) })
+            .bindPopup(`<strong>Route ${index + 1} · Stop ${stopIndex + 1}</strong><br>${stop.address}`).addTo(layer);
+          latestRows.push({ address: stop.address, route: index + 1, order: stopIndex + 1, lat: stop.lat, lon: stop.lon });
+        });
+
+        const card = document.createElement('div');
+        card.className = 'route-card';
+        card.style.setProperty('--route-color', color);
+        card.innerHTML = `<div class="route-title"><strong>Route ${index + 1}</strong><span>${Math.round(totalMinutes)} min</span></div>
+          <div class="route-stats"><span>${route.stops.length} stops</span><span>${routeMiles.toFixed(1)} mi</span><span>${Math.round(roadMinutes)} min drive</span></div>`;
+        $('routeList').appendChild(card);
+      });
+
+      map.fitBounds(bounds, { padding: [35, 35], maxZoom: 13 });
+      $('totalStops').textContent = latestRows.length;
+      $('totalRoutes').textContent = routes.length;
+      $('totalMiles').textContent = `${totalDistance.toFixed(1)}`;
+      $('maxTime').textContent = `${Math.round(longest)} min`;
+      $('exportBtn').disabled = false;
+    }
+
+    async function plan() {
+      const raw = $('addresses').value.split(/\n+/).map(v => v.trim()).filter(Boolean);
+      const unique = [...new Set(raw)];
+      const k = Math.max(1, Math.min(12, Number($('routes').value) || 1, unique.length));
+      const serviceMinutes = Math.max(1, Number($('service').value) || 4);
+      if (!unique.length) return setStatus('请至少输入一个配送地址。', true);
+      if (unique.length > 60) return setStatus('演示版最多处理 60 个地址。', true);
+
+      $('planBtn').disabled = true;
+      $('exportBtn').disabled = true;
+      try {
+        setStatus('正在定位出发站…');
+        const depot = await geocode($('depot').value.trim());
+        if (!depot) throw new Error('无法定位出发站地址');
+        const stops = [];
+        const missed = [];
+        for (let i = 0; i < unique.length; i++) {
+          setStatus(`正在定位地址 ${i + 1}/${unique.length}…`);
+          const point = await geocode(unique[i]);
+          if (point) stops.push(point); else missed.push(unique[i]);
+          if (i < unique.length - 1) await sleep(1050);
+        }
+        if (!stops.length) throw new Error('没有地址能够成功定位');
+
+        const groups = partition(stops, depot, Math.min(k, stops.length));
+        const routes = [];
+        for (let i = 0; i < groups.length; i++) {
+          setStatus(`正在计算道路路线 ${i + 1}/${groups.length}…`);
+          const ordered = nearestNeighbor(groups[i], depot);
+          try {
+            const road = await roadRoute(depot, ordered);
+            routes.push({ stops: ordered, geometry: road.geometry, distance: road.distance, duration: road.duration });
+          } catch {
+            const fallbackMiles = [depot, ...ordered, depot].slice(1).reduce((sum, p, j) => sum + distance([depot, ...ordered][j], p), 0);
+            routes.push({ stops: ordered, fallbackMiles, distance: 0, duration: fallbackMiles / 25 * 3600 });
+          }
+        }
+        render(routes, depot, serviceMinutes);
+        const suffix = missed.length ? `；${missed.length} 个地址未找到` : '';
+        setStatus(`已生成 ${routes.length} 条模拟路线${suffix}。`);
+      } catch (error) {
+        setStatus(error.message || '生成失败，请稍后重试。', true);
+      } finally {
+        $('planBtn').disabled = false;
+      }
+    }
+
+    function exportCsv() {
+      const header = ['address','route','stop_order','latitude','longitude'];
+      const escape = value => `"${String(value).replaceAll('"','""')}"`;
+      const csv = [header.join(','), ...latestRows.map(r => [r.address,r.route,r.order,r.lat,r.lon].map(escape).join(','))].join('\n');
+      const url = URL.createObjectURL(new Blob([csv], { type:'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'albany-route-plan.csv';
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    $('planBtn').addEventListener('click', plan);
+    $('sampleBtn').addEventListener('click', () => { $('addresses').value = SAMPLE; setStatus('已恢复示例地址。'); });
+    $('exportBtn').addEventListener('click', exportCsv);
+  </script>
+</body>
+</html>
