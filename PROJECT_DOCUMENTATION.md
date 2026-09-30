@@ -34,9 +34,11 @@ Albany Route Planner 是一个面向纽约州 Capital Region 的末端配送路�
 - 将文字地址转换为经纬度
 - 根据出发站和地址空间分布划分配送区域
 - 平衡各线路的 Stop 数量
-- 为每条线路生成近似配送顺序
+- 使用最近邻和 2-opt 为每条线路生成优化配送顺序
 - 根据道路网络计算路线、里程和驾驶时间
 - 将每站服务时间加入线路总时间估算
+- 上传司机历史 CSV 并建立司机表现档案
+- 根据历史表现、区域熟悉度和容量自动匹配司机
 
 ### 3.3 输出
 
@@ -45,6 +47,25 @@ Albany Route Planner 是一个面向纽约州 Capital Region 的末端配送路�
 - 每条线路的 Stops、Miles、Driving Time 和 Estimated Time
 - 总 Stops、总 Routes、总里程和最长线路时间
 - CSV 导出文件
+
+### 3.4 司机历史数据接口
+
+网页提供 CSV 上传入口和模板下载。模板字段：
+
+| 字段 | 含义 |
+|---|---|
+| `date` | 历史记录日期 |
+| `driver_id` | 司机唯一编号 |
+| `driver_name` | 司机姓名或显示名称 |
+| `area` | Albany、Troy、Schenectady 或 Clifton Park |
+| `assigned_packages` | 分配包裹数 |
+| `delivered_packages` | 妥投包裹数 |
+| `stops` | 完成的 Stops |
+| `exceptions` | 异常件数量 |
+| `false_deliveries` | 虚假签收数量 |
+| `work_minutes` | 当日工作分钟数 |
+
+司机历史数据不会发送到本项目服务器，仅在当前浏览器会话内聚合和评分。
 
 ## 4. 使用流程
 
@@ -64,6 +85,10 @@ Albany Route Planner 是一个面向纽约州 Capital Region 的末端配送路�
 | `address` | 配送地址 |
 | `route` | 分配的线路编号 |
 | `stop_order` | 在线路中的访问顺序 |
+| `route_area` | 系统识别的主要配送区域 |
+| `driver_id` | 匹配司机编号 |
+| `driver_name` | 匹配司机名称 |
+| `driver_match_score` | 司机与线路匹配分 |
 | `latitude` | 纬度 |
 | `longitude` | 经度 |
 
@@ -76,10 +101,14 @@ flowchart TD
     A[用户输入文字地址] --> B[Nominatim 地理编码]
     B --> C[地址经纬度]
     C --> D[浏览器端分区算法]
-    D --> E[最近邻访问顺序]
+    D --> E[最近邻 + 2-opt]
     E --> F[OSRM 道路路线]
+    I[司机历史 CSV] --> J[样本量修正与表现评分]
+    J --> K[司机与线路匹配]
+    F --> K
     F --> G[Leaflet 地图显示]
-    F --> H[路线指标与 CSV]
+    K --> G
+    K --> H[路线指标与 CSV]
 ```
 
 网页由 GitHub Pages 托管。所有计算逻辑均在浏览器执行，目前没有独立后端和数据库。
@@ -130,7 +159,7 @@ Address → Latitude / Longitude
 
 这种方法可以快速产生空间连续的初步线路，但当前仅平衡 Stop 数量，没有直接平衡道路时间、包裹数或服务难度。
 
-### 7.4 访问顺序
+### 7.4 访问顺序与 2-opt
 
 每条线路内部使用最近邻启发式：
 
@@ -139,9 +168,50 @@ Address → Latitude / Longitude
 3. 重复直到访问全部 Stop。
 4. 最后返回出发站。
 
-当前最近邻判断使用经纬度球面距离；最终路线形状、道路里程和驾驶时间由 OSRM 计算。
+最近邻产生初始顺序后，系统使用 2-opt 反复检查交叉或低效路段。如果反转一段访问顺序能够缩短路线，就保留该调整。当前优化成本使用经纬度球面距离；最终路线形状、道路里程和驾驶时间由 OSRM 计算。
 
-### 7.5 工作时间估算
+### 7.5 司机表现与样本量修正
+
+系统从 CSV 聚合每名司机的历史指标：
+
+- 妥投率
+- 异常率
+- 虚假签收率
+- 每小时 Stops
+- 各区域累计 Stops
+
+为避免少量记录造成极端评分，司机个人指标会按历史样本量向车队平均水平收缩：
+
+```text
+Adjusted Metric
+= Reliability × Driver Metric
++ (1 - Reliability) × Fleet Average
+
+Reliability = Historical Volume / (Historical Volume + Prior Strength)
+```
+
+当前综合表现分权重：
+
+```text
+Performance Score
+= 60% × Adjusted Delivery Rate
++ 25% × (1 - Adjusted Exception Rate)
++ 15% × (1 - Adjusted False Delivery Rate)
+```
+
+司机与线路的匹配分进一步考虑：
+
+```text
+Driver–Route Match
+= 60% × Performance Score
++ 25% × Area Familiarity
++ 15% × Capacity Fit
+- Overload Penalty
+```
+
+每名司机最多匹配一条线路，每条线路最多匹配一名司机。当前使用按匹配分排序的加权匹配方法。
+
+### 7.6 工作时间估算
 
 每条线路预计时间为：
 
@@ -160,6 +230,10 @@ albany-route-planner/
 ├── index.html
 ├── README.md
 ├── PROJECT_DOCUMENTATION.md
+├── examples/
+│   └── driver-history-template.csv
+├── tests/
+│   └── smoke.test.js
 └── .github/
     └── workflows/
         └── pages.yml
@@ -170,6 +244,8 @@ albany-route-planner/
 | `index.html` | 完整网页、样式和 JavaScript 逻辑 |
 | `README.md` | 项目快速说明 |
 | `PROJECT_DOCUMENTATION.md` | 完整项目文档 |
+| `examples/driver-history-template.csv` | 司机历史数据示例模板 |
+| `tests/smoke.test.js` | CSV、优化和司机匹配逻辑测试 |
 | `.github/workflows/pages.yml` | GitHub Pages 自动部署 |
 
 ## 9. GitHub Pages 部署
@@ -206,9 +282,9 @@ albany-route-planner/
 
 - 每次最多 60 个地址。
 - 公共地理编码接口需要限制请求频率。
-- 仅支持文字地址逐行输入，尚不支持上传 DMS CSV。
+- 订单仅支持文字地址逐行输入，尚不支持上传 DMS CSV。
 - 当前分区主要平衡 Stops，不平衡 Packages 或真实工作量。
-- 没有车辆容量、司机能力或路线熟悉度模型。
+- 司机容量和熟悉度来自历史 CSV 的简化估计，尚未进行站点实测校准。
 - 没有时间窗、承诺时效或优先件约束。
 - 没有实时交通或站点历史速度修正。
 - 没有将同一建筑或邻近门牌合并成一个 Stop。
