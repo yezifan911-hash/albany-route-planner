@@ -1,0 +1,9 @@
+date,driver_id,driver_name,area,assigned_packages,delivered_packages,stops,exceptions,false_deliveries,work_minutes
+2026-09-01,D001,Driver A,Albany,220,217,164,3,0,470
+2026-09-02,D001,Driver A,Albany,235,231,172,4,1,485
+2026-09-01,D002,Driver B,Troy,205,203,153,2,0,455
+2026-09-02,D002,Driver B,Troy,218,215,160,3,0,468
+2026-09-01,D003,Driver C,Schenectady,198,194,148,4,1,475
+2026-09-02,D003,Driver C,Schenectady,212,208,156,4,0,480
+2026-09-01,D004,Driver D,Clifton Park,230,228,170,2,0,460
+2026-09-02,D004,Driver D,Clifton Park,242,239,178,3,0,475
