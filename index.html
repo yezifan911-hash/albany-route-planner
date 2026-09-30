@@ -45,6 +45,14 @@
     .primary { color: white; background: var(--brand); }
     .primary:hover:not(:disabled) { background: var(--brand-dark); }
     .secondary { color: #31404d; background: #edf1f4; }
+    .upload-box { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #f8fafb; }
+    .upload-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .file-button { margin: 0; padding: 9px 11px; border-radius: 8px; background: #e5eeeb; color: var(--brand-dark); font-size: 12px; font-weight: 800; text-align: center; cursor: pointer; }
+    .file-button:hover { background: #d9e7e2; }
+    .driver-status { margin-top: 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .driver-line { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 11px; }
+    .driver-line strong { color: var(--ink); }
+    .driver-line span { color: var(--muted); text-align: right; }
     .status { min-height: 38px; margin-top: 12px; padding: 9px 10px; border-radius: 8px; background: #f0f5f3; color: #31564d; font-size: 12px; line-height: 1.5; }
     .status.error { background: #fff1f0; color: var(--danger); }
     .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
@@ -107,12 +115,22 @@
           <div><label for="routes">线路数量</label><input id="routes" type="number" min="1" max="12" value="4" /></div>
           <div><label for="service">每站分钟</label><input id="service" type="number" min="1" max="30" value="4" /></div>
         </div>
+        <div class="upload-box">
+          <label for="driverFile">司机历史数据（CSV）</label>
+          <div class="upload-actions">
+            <label class="file-button" for="driverFile">上传历史数据</label>
+            <input id="driverFile" type="file" accept=".csv,text/csv" hidden />
+            <button id="templateBtn" class="secondary" type="button">下载模板</button>
+          </div>
+          <div id="driverStatus" class="driver-status">未上传；生成路线时不会自动匹配司机。</div>
+          <div class="hint">数据只在当前浏览器会话中分析，不上传至本项目服务器。</div>
+        </div>
         <div class="actions">
           <button id="planBtn" class="primary">生成路线</button>
           <button id="sampleBtn" class="secondary" title="恢复示例地址">示例</button>
         </div>
         <div id="status" class="status">准备就绪。输入地址后生成模拟路线。</div>
-        <div class="footer-note">地址会从浏览器发送至公共 Nominatim 地理编码服务，坐标会发送至公共 OSRM 路线服务；本网页不保存订单。真实运营数据建议后续切换为本地 Valhalla。</div>
+        <div class="footer-note">地址会从浏览器发送至公共 Nominatim 地理编码服务，坐标会发送至公共 OSRM 路线服务；司机历史 CSV 仅在浏览器内计算。真实运营数据建议后续切换为本地 Valhalla。</div>
       </aside>
 
       <div id="map" aria-label="路线地图"></div>
@@ -134,6 +152,21 @@
   <script>
     const COLORS = ['#1565c0','#d84315','#2e7d32','#7b1fa2','#00838f','#c2185b','#6d4c41','#ef6c00','#455a64','#558b2f','#5e35b1','#0277bd'];
     const ALBANY_BOUNDS = '-74.35,42.55,-73.45,43.20';
+    const AREA_CENTERS = {
+      'Albany': { lat: 42.6526, lon: -73.7562 },
+      'Troy': { lat: 42.7284, lon: -73.6918 },
+      'Schenectady': { lat: 42.8142, lon: -73.9396 },
+      'Clifton Park': { lat: 42.8656, lon: -73.7709 }
+    };
+    const DRIVER_TEMPLATE = `date,driver_id,driver_name,area,assigned_packages,delivered_packages,stops,exceptions,false_deliveries,work_minutes
+2026-09-01,D001,Driver A,Albany,220,217,164,3,0,470
+2026-09-02,D001,Driver A,Albany,235,231,172,4,1,485
+2026-09-01,D002,Driver B,Troy,205,203,153,2,0,455
+2026-09-02,D002,Driver B,Troy,218,215,160,3,0,468
+2026-09-01,D003,Driver C,Schenectady,198,194,148,4,1,475
+2026-09-02,D003,Driver C,Schenectady,212,208,156,4,0,480
+2026-09-01,D004,Driver D,Clifton Park,230,228,170,2,0,460
+2026-09-02,D004,Driver D,Clifton Park,242,239,178,3,0,475`;
     const SAMPLE = document.getElementById('addresses').value;
     const map = L.map('map', { zoomControl: true }).setView([42.76, -73.82], 9);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -142,6 +175,7 @@
     }).addTo(map);
     const layer = L.layerGroup().addTo(map);
     let latestRows = [];
+    let driverProfiles = [];
 
     const $ = id => document.getElementById(id);
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -160,6 +194,137 @@
     function setStatus(message, error = false) {
       $('status').textContent = message;
       $('status').classList.toggle('error', error);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, character => ({
+        '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
+      })[character]);
+    }
+
+    function downloadText(filename, text, type = 'text/plain;charset=utf-8') {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let field = '';
+      let quoted = false;
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char === '"') {
+          if (quoted && text[i + 1] === '"') { field += '"'; i++; }
+          else quoted = !quoted;
+        } else if (char === ',' && !quoted) {
+          row.push(field.trim()); field = '';
+        } else if ((char === '\n' || char === '\r') && !quoted) {
+          if (char === '\r' && text[i + 1] === '\n') i++;
+          row.push(field.trim());
+          if (row.some(value => value !== '')) rows.push(row);
+          row = []; field = '';
+        } else {
+          field += char;
+        }
+      }
+      row.push(field.trim());
+      if (row.some(value => value !== '')) rows.push(row);
+      if (quoted) throw new Error('CSV 引号未闭合');
+      if (rows.length < 2) throw new Error('CSV 没有数据行');
+      const headers = rows.shift().map((value, index) => (index === 0 ? value.replace(/^\uFEFF/, '') : value).toLowerCase());
+      return rows.map(values => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ''])));
+    }
+
+    function numeric(value, field, rowNumber) {
+      const result = Number(value);
+      if (!Number.isFinite(result) || result < 0) throw new Error(`第 ${rowNumber} 行的 ${field} 无效`);
+      return result;
+    }
+
+    function normalizeArea(value) {
+      const area = String(value || '').trim().toLowerCase();
+      if (area.includes('clifton')) return 'Clifton Park';
+      if (area.includes('schenectady') || area.includes('niskayuna')) return 'Schenectady';
+      if (area.includes('troy')) return 'Troy';
+      if (area.includes('albany')) return 'Albany';
+      return String(value || '').trim();
+    }
+
+    function buildDriverProfiles(records) {
+      const required = ['driver_id','area','assigned_packages','delivered_packages','stops','exceptions','false_deliveries','work_minutes'];
+      const missing = required.filter(field => !(field in records[0]));
+      if (missing.length) throw new Error(`缺少字段：${missing.join(', ')}`);
+
+      const grouped = new Map();
+      records.forEach((record, index) => {
+        const rowNumber = index + 2;
+        const id = String(record.driver_id || '').trim();
+        if (!id) throw new Error(`第 ${rowNumber} 行缺少 driver_id`);
+        if (!grouped.has(id)) grouped.set(id, {
+          id,
+          name: String(record.driver_name || id).trim() || id,
+          assigned: 0, delivered: 0, stops: 0, exceptions: 0, falseDeliveries: 0, workMinutes: 0,
+          areaStops: {}, records: 0
+        });
+        const driver = grouped.get(id);
+        const assigned = numeric(record.assigned_packages, 'assigned_packages', rowNumber);
+        const delivered = numeric(record.delivered_packages, 'delivered_packages', rowNumber);
+        const stops = numeric(record.stops, 'stops', rowNumber);
+        const exceptions = numeric(record.exceptions, 'exceptions', rowNumber);
+        const falseDeliveries = numeric(record.false_deliveries, 'false_deliveries', rowNumber);
+        const workMinutes = numeric(record.work_minutes, 'work_minutes', rowNumber);
+        if (delivered > assigned) throw new Error(`第 ${rowNumber} 行 delivered_packages 不能大于 assigned_packages`);
+        const area = normalizeArea(record.area);
+        driver.assigned += assigned;
+        driver.delivered += delivered;
+        driver.stops += stops;
+        driver.exceptions += exceptions;
+        driver.falseDeliveries += falseDeliveries;
+        driver.workMinutes += workMinutes;
+        driver.areaStops[area] = (driver.areaStops[area] || 0) + stops;
+        driver.records++;
+      });
+
+      const drivers = [...grouped.values()];
+      const fleet = drivers.reduce((total, driver) => ({
+        assigned: total.assigned + driver.assigned,
+        delivered: total.delivered + driver.delivered,
+        exceptions: total.exceptions + driver.exceptions,
+        falseDeliveries: total.falseDeliveries + driver.falseDeliveries,
+        stops: total.stops + driver.stops,
+        workMinutes: total.workMinutes + driver.workMinutes
+      }), { assigned:0, delivered:0, exceptions:0, falseDeliveries:0, stops:0, workMinutes:0 });
+      const fleetDelivery = fleet.assigned ? fleet.delivered / fleet.assigned : 0;
+      const fleetException = fleet.assigned ? fleet.exceptions / fleet.assigned : 0;
+      const fleetFalse = fleet.assigned ? fleet.falseDeliveries / fleet.assigned : 0;
+      const fleetEfficiency = fleet.workMinutes ? fleet.stops / (fleet.workMinutes / 60) : 0;
+
+      return drivers.map(driver => {
+        const volumeWeight = driver.assigned / (driver.assigned + 200);
+        const stopWeight = driver.stops / (driver.stops + 120);
+        const delivery = volumeWeight * (driver.delivered / Math.max(1, driver.assigned)) + (1 - volumeWeight) * fleetDelivery;
+        const exception = volumeWeight * (driver.exceptions / Math.max(1, driver.assigned)) + (1 - volumeWeight) * fleetException;
+        const falseRate = volumeWeight * (driver.falseDeliveries / Math.max(1, driver.assigned)) + (1 - volumeWeight) * fleetFalse;
+        const rawEfficiency = driver.workMinutes ? driver.stops / (driver.workMinutes / 60) : fleetEfficiency;
+        const efficiency = stopWeight * rawEfficiency + (1 - stopWeight) * fleetEfficiency;
+        const performance = 100 * (0.60 * delivery + 0.25 * (1 - exception) + 0.15 * (1 - falseRate));
+        return { ...driver, delivery, exception, falseRate, efficiency, performance, capacityStops: efficiency * 8 };
+      }).sort((a,b) => b.performance - a.performance);
+    }
+
+    function nearestArea(point) {
+      return Object.entries(AREA_CENTERS).sort((a,b) => distance(point, a[1]) - distance(point, b[1]))[0][0];
+    }
+
+    function dominantArea(stops) {
+      const counts = {};
+      stops.forEach(stop => { const area = nearestArea(stop); counts[area] = (counts[area] || 0) + 1; });
+      return Object.entries(counts).sort((a,b) => b[1] - a[1])[0]?.[0] || 'Albany';
     }
 
     async function geocode(address) {
@@ -189,9 +354,20 @@
         const ab = Math.atan2(b.lat - depot.lat, b.lon - depot.lon);
         return aa - ab;
       });
-      const groups = Array.from({ length: k }, () => []);
-      sorted.forEach((stop, i) => groups[Math.min(k - 1, Math.floor(i * k / sorted.length))].push(stop));
-      return groups.filter(group => group.length);
+      let bestGroups = [];
+      let bestCost = Infinity;
+      const shifts = k === 1 ? 1 : sorted.length;
+      for (let shift = 0; shift < shifts; shift++) {
+        const rotated = [...sorted.slice(shift), ...sorted.slice(0, shift)];
+        const groups = Array.from({ length: k }, () => []);
+        rotated.forEach((stop, i) => groups[Math.min(k - 1, Math.floor(i * k / rotated.length))].push(stop));
+        const cost = groups.reduce((sum, group) => {
+          const order = twoOpt(nearestNeighbor(group, depot), depot);
+          return sum + routeLength(order, depot);
+        }, 0);
+        if (cost < bestCost) { bestCost = cost; bestGroups = groups; }
+      }
+      return bestGroups.filter(group => group.length);
     }
 
     function nearestNeighbor(stops, depot) {
@@ -207,6 +383,57 @@
         ordered.push(current);
       }
       return ordered;
+    }
+
+    function routeLength(stops, depot) {
+      const points = [depot, ...stops, depot];
+      return points.slice(1).reduce((sum, point, index) => sum + distance(points[index], point), 0);
+    }
+
+    function twoOpt(stops, depot) {
+      if (stops.length < 4) return [...stops];
+      let route = [...stops];
+      let improved = true;
+      let passes = 0;
+      while (improved && passes < 8) {
+        improved = false;
+        passes++;
+        for (let i = 0; i < route.length - 1; i++) {
+          for (let j = i + 1; j < route.length; j++) {
+            const a = i === 0 ? depot : route[i - 1];
+            const b = route[i];
+            const c = route[j];
+            const d = j === route.length - 1 ? depot : route[j + 1];
+            if (distance(a, c) + distance(b, d) + 0.0001 < distance(a, b) + distance(c, d)) {
+              route = [...route.slice(0, i), ...route.slice(i, j + 1).reverse(), ...route.slice(j + 1)];
+              improved = true;
+            }
+          }
+        }
+      }
+      return route;
+    }
+
+    function matchDrivers(routes) {
+      routes.forEach(route => { route.area = dominantArea(route.stops); route.driver = null; });
+      if (!driverProfiles.length) return;
+      const pairs = [];
+      routes.forEach((route, routeIndex) => driverProfiles.forEach(driver => {
+        const familiarity = ((driver.areaStops[route.area] || 0) + 10) / (driver.stops + 40);
+        const capacityFit = Math.min(1, driver.capacityStops / Math.max(1, route.stops.length));
+        const overload = Math.max(0, route.stops.length - driver.capacityStops) / Math.max(1, driver.capacityStops);
+        const score = Math.max(0, 100 * (0.60 * driver.performance / 100 + 0.25 * familiarity + 0.15 * capacityFit) - 15 * overload);
+        pairs.push({ routeIndex, driver, score, familiarity });
+      }));
+      pairs.sort((a,b) => b.score - a.score);
+      const usedRoutes = new Set();
+      const usedDrivers = new Set();
+      for (const pair of pairs) {
+        if (usedRoutes.has(pair.routeIndex) || usedDrivers.has(pair.driver.id)) continue;
+        routes[pair.routeIndex].driver = { ...pair.driver, matchScore: pair.score, familiarity: pair.familiarity };
+        usedRoutes.add(pair.routeIndex);
+        usedDrivers.add(pair.driver.id);
+      }
     }
 
     async function roadRoute(depot, ordered) {
@@ -227,7 +454,7 @@
     function render(routes, depot, serviceMinutes) {
       layer.clearLayers();
       L.marker([depot.lat, depot.lon], { icon: L.divIcon({ className:'', html:'<div class="depot-icon">◆</div>' }) })
-        .bindPopup(`<strong>Depot</strong><br>${depot.label || depot.address}`).addTo(layer);
+        .bindPopup(`<strong>Depot</strong><br>${escapeHtml(depot.label || depot.address)}`).addTo(layer);
       const bounds = [[depot.lat, depot.lon]];
       let totalDistance = 0;
       let longest = 0;
@@ -252,15 +479,22 @@
         route.stops.forEach((stop, stopIndex) => {
           bounds.push([stop.lat, stop.lon]);
           L.marker([stop.lat, stop.lon], { icon: markerIcon(stopIndex + 1, color) })
-            .bindPopup(`<strong>Route ${index + 1} · Stop ${stopIndex + 1}</strong><br>${stop.address}`).addTo(layer);
-          latestRows.push({ address: stop.address, route: index + 1, order: stopIndex + 1, lat: stop.lat, lon: stop.lon });
+            .bindPopup(`<strong>Route ${index + 1} · Stop ${stopIndex + 1}</strong><br>${escapeHtml(stop.address)}`).addTo(layer);
+          latestRows.push({
+            address: stop.address, route: index + 1, order: stopIndex + 1, area: route.area,
+            driverId: route.driver?.id || '', driverName: route.driver?.name || '',
+            matchScore: route.driver ? route.driver.matchScore.toFixed(1) : '', lat: stop.lat, lon: stop.lon
+          });
         });
 
         const card = document.createElement('div');
         card.className = 'route-card';
         card.style.setProperty('--route-color', color);
+        const driverLine = route.driver
+          ? `<div class="driver-line"><strong>${escapeHtml(route.driver.name)}</strong><span>${escapeHtml(route.area)} · Match ${route.driver.matchScore.toFixed(0)}<br>历史表现 ${route.driver.performance.toFixed(1)}</span></div>`
+          : `<div class="driver-line"><strong>未匹配司机</strong><span>${escapeHtml(route.area)}</span></div>`;
         card.innerHTML = `<div class="route-title"><strong>Route ${index + 1}</strong><span>${Math.round(totalMinutes)} min</span></div>
-          <div class="route-stats"><span>${route.stops.length} stops</span><span>${routeMiles.toFixed(1)} mi</span><span>${Math.round(roadMinutes)} min drive</span></div>`;
+          <div class="route-stats"><span>${route.stops.length} stops</span><span>${routeMiles.toFixed(1)} mi</span><span>${Math.round(roadMinutes)} min drive</span></div>${driverLine}`;
         $('routeList').appendChild(card);
       });
 
@@ -300,7 +534,7 @@
         const routes = [];
         for (let i = 0; i < groups.length; i++) {
           setStatus(`正在计算道路路线 ${i + 1}/${groups.length}…`);
-          const ordered = nearestNeighbor(groups[i], depot);
+          const ordered = twoOpt(nearestNeighbor(groups[i], depot), depot);
           try {
             const road = await roadRoute(depot, ordered);
             routes.push({ stops: ordered, geometry: road.geometry, distance: road.distance, duration: road.duration });
@@ -309,9 +543,12 @@
             routes.push({ stops: ordered, fallbackMiles, distance: 0, duration: fallbackMiles / 25 * 3600 });
           }
         }
+        matchDrivers(routes);
         render(routes, depot, serviceMinutes);
         const suffix = missed.length ? `；${missed.length} 个地址未找到` : '';
-        setStatus(`已生成 ${routes.length} 条模拟路线${suffix}。`);
+        const matched = routes.filter(route => route.driver).length;
+        const driverSuffix = driverProfiles.length ? `；已匹配 ${matched}/${routes.length} 名司机` : '';
+        setStatus(`已生成 ${routes.length} 条优化路线${driverSuffix}${suffix}。`);
       } catch (error) {
         setStatus(error.message || '生成失败，请稍后重试。', true);
       } finally {
@@ -320,20 +557,40 @@
     }
 
     function exportCsv() {
-      const header = ['address','route','stop_order','latitude','longitude'];
+      const header = ['address','route','stop_order','route_area','driver_id','driver_name','driver_match_score','latitude','longitude'];
       const escape = value => `"${String(value).replaceAll('"','""')}"`;
-      const csv = [header.join(','), ...latestRows.map(r => [r.address,r.route,r.order,r.lat,r.lon].map(escape).join(','))].join('\n');
-      const url = URL.createObjectURL(new Blob([csv], { type:'text/csv;charset=utf-8' }));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'albany-route-plan.csv';
-      link.click();
-      URL.revokeObjectURL(url);
+      const csv = [header.join(','), ...latestRows.map(r => [
+        r.address,r.route,r.order,r.area,r.driverId,r.driverName,r.matchScore,r.lat,r.lon
+      ].map(escape).join(','))].join('\n');
+      downloadText('albany-route-plan.csv', csv, 'text/csv;charset=utf-8');
+    }
+
+    async function loadDriverHistory(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      if (file.size > 5 * 1024 * 1024) {
+        $('driverStatus').textContent = '文件超过 5 MB，请先汇总司机历史数据。';
+        driverProfiles = [];
+        return;
+      }
+      try {
+        const records = parseCsv(await file.text());
+        driverProfiles = buildDriverProfiles(records);
+        const best = driverProfiles[0];
+        $('driverStatus').textContent = `已读取 ${driverProfiles.length} 名司机、${records.length} 条记录；最高历史表现分 ${best.performance.toFixed(1)}。请重新生成路线。`;
+        setStatus('司机历史数据已加载；生成路线后将自动匹配司机。');
+      } catch (error) {
+        driverProfiles = [];
+        $('driverStatus').textContent = error.message || '司机历史 CSV 读取失败。';
+        setStatus('司机历史数据格式有误，请下载模板检查字段。', true);
+      }
     }
 
     $('planBtn').addEventListener('click', plan);
     $('sampleBtn').addEventListener('click', () => { $('addresses').value = SAMPLE; setStatus('已恢复示例地址。'); });
     $('exportBtn').addEventListener('click', exportCsv);
+    $('driverFile').addEventListener('change', loadDriverHistory);
+    $('templateBtn').addEventListener('click', () => downloadText('driver-history-template.csv', DRIVER_TEMPLATE, 'text/csv;charset=utf-8'));
   </script>
 </body>
 </html>
